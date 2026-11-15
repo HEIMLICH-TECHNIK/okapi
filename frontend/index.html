@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="okapi-build" content="__OKAPI_BUILD__">
+<meta name="okapi-version" content="__OKAPI_VERSION__">
+<title>okapi · Video Workspace</title>
+<link rel="icon" href="/okapi/assets/okapi.png">
+<style>
+:root{color-scheme:dark;background:#272727;color:#ccc;font:13px system-ui}
+*{box-sizing:border-box}
+body{margin:0;overflow:hidden}
+[hidden]{display:none!important}
+#okapi-workspace{display:block;width:100vw;height:100dvh;outline:none}
+#okapi-media{position:fixed;display:flex;flex-direction:column;overflow:hidden;background:#131313;z-index:1}
+#okapi-media.workspace-hidden{visibility:hidden;pointer-events:none}
+#okapi-media video,.media-mount{display:block;width:100%;height:100%;object-fit:contain}
+.media-mount,#okapi-media video{flex:1;min-height:0}
+.media-seek{flex:0 0 31px;display:flex;align-items:stretch;gap:9px;min-width:0;padding:0 8px;background:#191919;border-top:1px solid #343434}
+.media-seek button{align-self:center;width:22px;height:22px;flex-shrink:0;padding:0;color:#bdbdbd;background:transparent;border:0;border-radius:3px;font:11px system-ui;cursor:pointer}
+.media-seek button:hover:not(:disabled){background:#363636;color:#eee}
+.media-seek button:disabled{opacity:.44;cursor:default}
+.media-seek output{align-self:center;flex-shrink:0;color:#c4c4c4;white-space:nowrap;font:10px ui-monospace,monospace;min-width:var(--clock-width,11ch)}
+.seek-ruler{flex:1;position:relative;min-width:32px;margin:0 3px;border-bottom:1px solid #404040;background:linear-gradient(#202020,#191919)}
+.seek-tick{position:absolute;bottom:0;height:4px;width:1px;background:#454545;pointer-events:none}
+.seek-tick.major{height:8px;background:#6b6b6}
+.seek-tick span{position:absolute;bottom:11px;left:0;transform:translateX(-50%);color:#9c9c9c;white-space:nowrap;font:9px ui-monospace,monospace}
+.seek-tick:first-child span{transform:none}
+.seek-tick:last-child span{transform:translateX(-100%)}
+.seek-playhead{position:absolute;top:1px;bottom:0;left:0;width:1px;background:#ececec;pointer-events:none}
+.seek-playhead::before{content:'';position:absolute;left:-4px;border:solid transparent;border-width:6px 4.5px 0;border-top-color:#ececec}
+.seek-ruler input{appearance:none;position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:ew-resize}
+.seek-ruler input::-webkit-slider-thumb{appearance:none;width:1px;height:30px}
+.seek-ruler input::-moz-range-thumb{width:1px;height:30px;border:0}
+.seek-ruler:has(input:focus-visible){outline:1px solid #8babff;outline-offset:-1px}
+.media-notice,#boot-status{position:absolute;inset:0;display:grid;place-content:center;padding:16px;text-align:center;pointer-events:none;background:#131313}
+#boot-status{z-index:3;background:#272727}
+.about-dialog{width:min(320px,calc(100vw - 32px));padding:27px 23px 20px;text-align:center;color:#dfdfdf;background:#222;border:1px solid #454545;border-radius:6px;box-shadow:0 12px 48px #0009}
+.about-dialog::backdrop{background:#0009}
+.about-dialog img{display:block;width:64px;height:auto;margin:0 auto}
+.about-dialog h1{margin:0;color:#e9e0d3;font:44px/1 "Okapi Wordmark",Georgia,serif}
+.about-dialog p{margin:14px 0 5px;font-size:13px}
+.about-dialog .version{margin:0 0 23px;color:#a8a8a8;font:12px ui-monospace,monospace}
+.about-dialog button{padding:5px 17px;font:inherit;color:inherit;background:#303030;border:1px solid #4d4d4d;border-radius:3px;cursor:pointer}
+.about-dialog button:hover{background:#3d3d3d}
+.about-dialog button:focus-visible{outline:1px solid #8babff;outline-offset:2px}
+#okapi-profile-button{position:fixed;z-index:2;display:flex;align-items:center;gap:6px;padding:2px 6px;font:12px system-ui;color:#d3d5db;background:transparent;border:0;cursor:pointer}
+.profile-name,.profile-email{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.profile-avatar{display:grid;flex:none;place-items:center;width:18px;height:18px;border-radius:50%;background:#343c55;color:#d5e1ff;font:600 9px system-ui}
+#okapi-profile{position:fixed;inset:auto;margin:0;padding:6px;width:min(250px,calc(100vw - 20px));color:#ddd;background:#242426;border:1px solid #45454b;border-radius:6px;box-shadow:0 8px 24px #0008}
+.profile-identity{display:flex;align-items:center;gap:10px;padding:9px 8px 12px;border-bottom:1px solid #3b3b40}
+.profile-identity .profile-avatar{width:34px;height:34px;font-size:12px}
+.profile-identity div{min-width:0}
+.profile-identity strong{display:block;font-weight:600}
+.profile-email{display:block;margin-top:3px;color:#a6a8b2;font-size:11px}
+.profile-action{display:block;width:100%;margin-top:3px;padding:8px;border:0;border-radius:4px;background:transparent;color:inherit;font:inherit;text-align:left;text-decoration:none;cursor:pointer}
+.profile-action:hover{background:#343744}
+.profile-action:focus-visible,#okapi-profile-button:focus-visible,.profile-save:focus-visible,.profile-editor input:focus-visible{outline:1px solid #8babff;outline-offset:-1px}
+.profile-editor{display:grid;gap:8px;padding:5px 8px 8px}
+.profile-editor label{display:grid;gap:4px;font-size:11px;color:#b7bac4}
+.profile-editor input{width:100%;padding:6px;color:#ddd;background:#19191a;border:1px solid #48484f;border-radius:3px;font:inherit}
+.profile-save{justify-self:end;padding:5px 12px;border:1px solid #536386;border-radius:3px;color:#e3ebff;background:#354463;font:inherit;cursor:pointer}
+.profile-error{margin:0;color:#ffb4ab;font-size:11px}
+</style>
+</head>
+<body>
+<canvas id="okapi-workspace" aria-label="okapi video workspace" tabindex="0"></canvas>
+<input id="okapi-file" type="file" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv" aria-label="Source video" hidden>
+<section id="okapi-media" aria-label="Clip preview" hidden></section>
+<button type="button" id="okapi-profile-button" popovertarget="okapi-profile" aria-label="User profile" aria-expanded="false" hidden>
+  <span class="profile-avatar" aria-hidden="true">MP</span><span class="profile-name">Mina Park</span>
+</button>
+<section id="okapi-profile" popover aria-label="User profile">
+  <div class="profile-identity">
+    <span class="profile-avatar" aria-hidden="true">MP</span>
+    <div><strong class="profile-name">Mina Park</strong><span class="profile-email">mina@example.com</span></div>
+  </div>
+  <a class="profile-action" href="/">Go to home</a>
+  <details id="okapi-profile-settings">
+    <summary class="profile-action">Profile settings</summary>
+    <form class="profile-editor">
+      <label>Display name<input name="name" maxlength="32" required></label>
+      <label>Email<input name="email" type="email" maxlength="96" required></label>
+      <p class="profile-error" role="status" hidden></p>
+      <button type="submit" class="profile-save">Save</button>
+    </form>
+  </details>
+</section>
+<dialog id="okapi-about" class="about-dialog" aria-labelledby="okapi-about-title">
+  <img src="/okapi/assets/okapi.png" alt="">
+  <h1 id="okapi-about-title">okapi</h1>
+  <p>Video Workspace</p>
+  <p class="version"></p>
+  <form method="dialog"><button autofocus>Close</button></form>
+</dialog>
+<div id="boot-status" role="status">Opening okapi…</div>
+<script type="module">
+  const tailnet = ['hmlh-server', 'hmlh-server.tail6ad677.ts.net'];
+  if (location.protocol === 'http:' && tailnet.includes(location.hostname)) {
+    const target = new URL(location.pathname + location.search, 'https://hmlh-server.tail6ad677.ts.net:8443');
+    const saved = sessionStorage.getItem('okapiJob');
+    if (saved && !target.searchParams.has('job')) target.searchParams.set('job', saved);
+    location.replace(target);
+  } else {
+    try {
+      const params = new URLSearchParams(location.search);
+      const job = params.get('job');
+      if (/^[0-9a-f]{32}$/.test(job || '')) {
+        sessionStorage.setItem('okapiJob', job);
+        params.delete('job');
+        history.replaceState(null, '', location.pathname + (params.size ? '?' + params : ''));
+      }
+      const build = document.querySelector('meta[name="okapi-build"]').content;
+      const { default: init, mount } = await import(`/okapi/assets/${build}/okapi.js`);
+      await init();
+      await mount(document.getElementById('okapi-workspace'));
+    } catch (error) {
+      const status = document.getElementById('boot-status');
+      status.textContent = 'Could not start okapi. Reload in a WebGL-capable browser.';
+      status.hidden = false;
+      console.error(error);
+    }
+  }
+</script>
+</body>
+</html>

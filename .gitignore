@@ -1,0 +1,15 @@
+/local.env
+/.env*
+/.local/
+/frontend/target/
+/frontend/.tools/
+/static/assets/workspace-rust-*
+/.rerun/
+/LTXVideo/
+/jobs/
+/reviews/
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store
+!/static/assets/workspace-rust-v100491732218739835872/

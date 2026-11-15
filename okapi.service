@@ -1,0 +1,14 @@
+[Unit]
+Description=okapi Alpha Gen workspace
+After=comfyui.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/services/okapi
+ExecStart=%h/services/comfyui/.venv/bin/python -u server.py
+Restart=on-failure
+RestartSec=3
+UMask=0077
+
+[Install]
+WantedBy=default.target

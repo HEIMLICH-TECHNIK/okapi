@@ -1,0 +1,69 @@
+name: Deploy okapi
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: okapi-production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Check release files
+        id: baseline
+        shell: bash
+        run: |
+          python3 -m py_compile server.py workflow.py rerun_recording.py
+          if [[ "$(git rev-parse HEAD:frontend)" == "$(cat deploy/baseline-frontend-tree)" ]] &&
+             grep -Fq "name=\"okapi-version\" content=\"$(cat VERSION)\"" static/index.html; then
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build WebAssembly
+        if: steps.baseline.outputs.reuse != 'true'
+        shell: bash
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal --target wasm32-unknown-unknown
+          asset=wasm-bindgen-0.2.126-x86_64-unknown-linux-musl
+          curl -fsSL --retry 3 "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.126/$asset.tar.gz" -o "$RUNNER_TEMP/$asset.tar.gz"
+          (cd "$RUNNER_TEMP" && printf '%s  %s\n' 064948d58e2d6c0a745216477a639ba696216d6309aaa902939d1b865b1d869d "$asset.tar.gz" | sha256sum -c)
+          tar -xf "$RUNNER_TEMP/$asset.tar.gz" -C "$RUNNER_TEMP"
+          RUSTUP_TOOLCHAIN=1.100.0 WASM_BINDGEN_BIN="$RUNNER_TEMP/$asset/wasm-bindgen" bash frontend/build.sh --current
+      - name: Package release
+        shell: bash
+        run: |
+          bash deploy/package.sh "$RUNNER_TEMP/release"
+          tar -C "$RUNNER_TEMP/release" -cf "$RUNNER_TEMP/okapi.tar" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: okapi-release
+          path: ${{ runner.temp }}/okapi.tar
+          compression-level: 1
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, okapi-hmlh]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: okapi-release
+          path: ${{ runner.temp }}/okapi-artifact
+      - name: Activate release
+        shell: bash
+        run: |
+          release=$(mktemp -d "$RUNNER_TEMP/okapi-release.XXXXXX")
+          trap 'rm -rf -- "$release"' EXIT
+          tar -xf "$RUNNER_TEMP/okapi-artifact/okapi.tar" -C "$release"
+          bash "$release/activate.sh" "$release"
