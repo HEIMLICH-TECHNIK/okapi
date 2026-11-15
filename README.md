@@ -16,7 +16,15 @@ cargo install wasm-bindgen-cli --version 0.2.126 --locked
 RUSTUP_TOOLCHAIN=1.100.0 bash frontend/build.sh --current
 ```
 
-Run the local Python server with a venv containing `aiohttp` and `av`, then open `http://127.0.0.1:18769/okapi`. The source, output, and review endpoints require a local ComfyUI installation and local runtime data. For UI-only work the editor still opens without an attached engine.
+Start the local preview with Python 3.12 and open `http://127.0.0.1:18769/okapi`.
+
+```sh
+uv venv --python 3.12 .local/venv
+uv pip install --python .local/venv/bin/python -r requirements-dev.txt
+.local/venv/bin/python dev.py
+```
+
+The editor opens without ComfyUI for UI work. To render locally during development, set `OKAPI_LOCAL_DATA` to the data directory of a local ComfyUI instance so both processes use the same input and output files. `OKAPI_ENGINE` defaults to `http://127.0.0.1:8188`. The optional Rerun recording endpoint also needs the existing `.rerun` runtime.
 
 ## Deploy
 
