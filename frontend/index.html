@@ -66,7 +66,9 @@ body{margin:0;overflow:hidden}
 </head>
 <body>
 <canvas id="okapi-workspace" aria-label="okapi video workspace" tabindex="0"></canvas>
+<div id="okapi-workflow-layer" hidden></div>
 <input id="okapi-file" type="file" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv" aria-label="Source video" hidden>
+<input id="okapi-workflow-file" type="file" accept=".json,application/json" aria-label="Import ComfyUI workflow" hidden>
 <section id="okapi-media" aria-label="Clip preview" hidden></section>
 <button type="button" id="okapi-profile-button" popovertarget="okapi-profile" aria-label="User profile" aria-expanded="false" hidden>
   <span class="profile-avatar" aria-hidden="true">MP</span><span class="profile-name">Mina Park</span>

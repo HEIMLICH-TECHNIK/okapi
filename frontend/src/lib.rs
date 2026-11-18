@@ -17,6 +17,14 @@ extern "C" {
     fn set_workspace_typing(typing: bool);
     #[wasm_bindgen(js_name = chooseFile)]
     fn choose_file();
+    #[wasm_bindgen(js_name = chooseWorkflow)]
+    fn choose_workflow();
+    #[wasm_bindgen(js_name = showWorkflow)]
+    fn show_workflow(id: &str);
+    #[wasm_bindgen(js_name = positionWorkflow)]
+    fn position_workflow(x: f32, y: f32, width: f32, height: f32, zoom: f32);
+    #[wasm_bindgen(js_name = removeWorkflow)]
+    fn remove_workflow(id: &str);
     #[wasm_bindgen(js_name = connectJob)]
     fn connect_job(job: &str);
     #[wasm_bindgen(js_name = setMediaVisible)]

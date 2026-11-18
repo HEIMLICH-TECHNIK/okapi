@@ -2,12 +2,15 @@ use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke, Ui, Vec2, pos2, 
 use serde::{Deserialize, Serialize};
 
 use crate::viewer_slots::{SLOT_COUNT, ViewerSlots};
+use crate::{choose_workflow, position_workflow, remove_workflow, show_workflow};
 
 const BLUE: Color32 = Color32::from_rgb(132, 166, 255);
 const MIN_ZOOM: f32 = 0.001;
 const MAX_ZOOM: f32 = 256.0;
 const MUTED: Color32 = Color32::from_rgb(154, 158, 172);
 const NODE_SNAP_DISTANCE: f32 = 10.0;
+const WARNING: Color32 = Color32::from_rgb(246, 190, 79);
+const WORKFLOW_SIZE: Vec2 = vec2(720.0, 480.0);
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +22,7 @@ pub enum NodeKind {
     Blur,
     Output,
     Viewer,
+    Workflow,
 }
 
 const EFFECTS: [NodeKind; 4] = [
@@ -47,6 +51,7 @@ impl NodeKind {
             Self::Blur => "Blur",
             Self::Output => "Write",
             Self::Viewer => "Viewer",
+            Self::Workflow => "Workflow",
         }
     }
 
@@ -55,7 +60,8 @@ impl NodeKind {
             Self::Source => BLUE,
             Self::Output => Color32::from_rgb(241, 201, 68),
             Self::Viewer => Color32::from_rgb(157, 174, 209),
-            Self::AlphaGen => Color32::from_rgb(211, 161, 255),
+            Self::AlphaGen => Color32::from_rgb(9, 0, 255),
+            Self::Workflow => Color32::from_rgb(211, 161, 255),
             _ => Color32::from_rgb(124, 209, 193),
         }
     }
@@ -151,6 +157,18 @@ struct Placement {
     name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parameters: Option<OperationParameters>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workflow: Option<WorkflowSummary>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WorkflowSummary {
+    id: String,
+    title: String,
+    inputs: Vec<String>,
+    outputs: Vec<String>,
+    #[serde(default)]
+    diagnostics: Vec<String>,
 }
 
 impl Placement {
@@ -161,6 +179,7 @@ impl Placement {
             y: point.y,
             name: None,
             parameters: None,
+            workflow: None,
         }
     }
 }
@@ -242,6 +261,20 @@ pub struct Graph {
     #[serde(skip)]
     shortcuts: Vec<String>,
     #[serde(skip)]
+    workflow_error: String,
+    #[serde(skip)]
+    reveal_workflow: Option<Node>,
+    #[serde(skip)]
+    engine_warnings: Vec<String>,
+    #[serde(skip)]
+    heimlich_symbol: Option<egui::TextureHandle>,
+    #[serde(skip)]
+    expanded_workflow: Option<(Node, Vec2)>,
+    #[serde(skip)]
+    fit_expanded_workflow: bool,
+    #[serde(skip)]
+    canvas_area: Option<Rect>,
+    #[serde(skip)]
     pub elbow_modifier: bool,
     #[serde(skip)]
     pan: Vec2,
@@ -284,6 +317,13 @@ impl Default for Graph {
             search_anchor: None,
             search_index: 0,
             shortcuts: Vec::new(),
+            workflow_error: String::new(),
+            reveal_workflow: None,
+            engine_warnings: Vec::new(),
+            heimlich_symbol: None,
+            expanded_workflow: None,
+            fit_expanded_workflow: false,
+            canvas_area: None,
             elbow_modifier: false,
             pan: Vec2::ZERO,
             zoom: 1.0,
@@ -292,6 +332,64 @@ impl Default for Graph {
 }
 
 impl Graph {
+    pub(crate) fn update_workflow(&mut self, workflow: WorkflowSummary, imported: bool) {
+        self.workflow_error.clear();
+        let node = self.nodes.iter().find_map(|placement| {
+            placement
+                .workflow
+                .as_ref()
+                .filter(|item| item.id == workflow.id)
+                .map(|_| placement.kind)
+        });
+        if let Some(node) = node.or_else(|| imported.then(|| self.add(NodeKind::Workflow))) {
+            if let Some(placement) = self
+                .nodes
+                .iter_mut()
+                .find(|placement| placement.kind == node)
+            {
+                placement.name.get_or_insert_with(|| workflow.title.clone());
+                placement.workflow = Some(workflow);
+                if imported {
+                    self.reveal_workflow = Some(node);
+                }
+                self.persist();
+            }
+        }
+    }
+
+    pub(crate) fn workflow_error(&mut self, message: String) {
+        self.workflow_error = message;
+    }
+
+    pub(crate) fn set_engine_warnings(&mut self, warnings: Vec<String>) {
+        self.engine_warnings = warnings;
+    }
+
+    pub(crate) fn has_warning(&self, node: Node) -> bool {
+        !self.warnings(node).is_empty()
+    }
+
+    fn warnings(&self, node: Node) -> &[String] {
+        match node.kind {
+            NodeKind::AlphaGen => &self.engine_warnings,
+            NodeKind::Workflow => self
+                .workflow(node)
+                .map_or(&[], |workflow| workflow.diagnostics.as_slice()),
+            _ => &[],
+        }
+    }
+
+    fn workflow(&self, node: Node) -> Option<&WorkflowSummary> {
+        if node.kind != NodeKind::Workflow {
+            return None;
+        }
+        self.nodes
+            .iter()
+            .find(|placement| placement.kind == node)?
+            .workflow
+            .as_ref()
+    }
+
     pub fn view(&self) -> GraphView {
         GraphView {
             selected: self.selected,
@@ -595,7 +693,7 @@ impl Graph {
                     }
                     break;
                 }
-                NodeKind::Viewer => return None,
+                NodeKind::Viewer | NodeKind::Workflow => return None,
                 _ => {}
             }
             if chain.len() >= self.nodes.len() {
@@ -639,8 +737,14 @@ impl Graph {
 
     fn can_connect(&self, source: Node, target: Node) -> bool {
         if source == target
-            || matches!(source.kind, NodeKind::Output | NodeKind::Viewer)
-            || matches!(target.kind, NodeKind::Source | NodeKind::Viewer)
+            || matches!(
+                source.kind,
+                NodeKind::Output | NodeKind::Viewer | NodeKind::Workflow
+            )
+            || matches!(
+                target.kind,
+                NodeKind::Source | NodeKind::Viewer | NodeKind::Workflow
+            )
         {
             return false;
         }
@@ -674,7 +778,7 @@ impl Graph {
         let valid = |kind: Node| match drag {
             WireDrag::Output(from) => kind.kind == NodeKind::Viewer || self.can_connect(from, kind),
             WireDrag::Input(to) => self.can_connect(kind, to),
-            WireDrag::Viewer(_, _) => kind.kind != NodeKind::Viewer,
+            WireDrag::Viewer(_, _) => !matches!(kind.kind, NodeKind::Viewer | NodeKind::Workflow),
         };
         boxes
             .iter()
@@ -745,7 +849,9 @@ impl Graph {
         });
         let from_point = from.and_then(|node| self.position(node));
         let to_point = to.and_then(|node| self.position(node));
-        let mut point = if EFFECTS.contains(&kind) {
+        let mut point = if kind == NodeKind::Workflow {
+            Pos2::ZERO + (vec2(0.0, 45.0) - self.pan) / self.zoom
+        } else if EFFECTS.contains(&kind) {
             match (from_point, to_point) {
                 (Some(a), Some(b)) => a.lerp(b, 0.5),
                 (Some(a), None) => a + vec2(0.0, 76.0),
@@ -757,9 +863,20 @@ impl Graph {
         while self.nodes.iter().any(|item| {
             Rect::from_center_size(pos2(item.x, item.y), node_size(item.kind))
                 .expand(9.0)
-                .intersects(Rect::from_center_size(point, vec2(118.0, 44.0)))
+                .intersects(Rect::from_center_size(
+                    point,
+                    if kind == NodeKind::Workflow {
+                        node_size(Node::first(kind))
+                    } else {
+                        vec2(118.0, 44.0)
+                    },
+                ))
         }) {
-            point.x += 140.0;
+            if kind == NodeKind::Workflow {
+                point.y += 54.0;
+            } else {
+                point.x += 140.0;
+            }
         }
         let node = self.spawn(kind, point);
         if (EFFECTS.contains(&kind) || kind == NodeKind::Output)
@@ -883,6 +1000,9 @@ impl Graph {
     }
 
     fn remove(&mut self, kind: Node) {
+        if let Some(workflow) = self.workflow(kind) {
+            remove_workflow(&workflow.id);
+        }
         let before = self
             .links
             .iter()
@@ -1064,6 +1184,67 @@ impl Graph {
         }
     }
 
+    fn workflow_frame(&self) -> Option<(Node, Rect)> {
+        let (node, offset) = self.expanded_workflow?;
+        let rect = Rect::from_min_size(self.position(node)? + offset, WORKFLOW_SIZE);
+        Some((node, rect))
+    }
+
+    fn toggle_workflow(&mut self, node: Node) {
+        if self.expanded_workflow.is_some_and(|(open, _)| open == node) {
+            self.expanded_workflow = None;
+            return;
+        }
+        let Some(id) = self.workflow(node).map(|workflow| workflow.id.clone()) else {
+            return;
+        };
+        let Some(anchor) = self.position(node) else {
+            return;
+        };
+        let scene = self.nodes.iter().fold(Rect::NOTHING, |bounds, item| {
+            bounds.union(Rect::from_center_size(
+                pos2(item.x, item.y),
+                node_size(item.kind),
+            ))
+        });
+        let beside = pos2(scene.right() + 36.0, anchor.y - 16.0);
+        let below = pos2(anchor.x - WORKFLOW_SIZE.x / 2.0, scene.bottom() + 36.0);
+        let area = self
+            .canvas_area
+            .unwrap_or_else(|| Rect::from_min_size(Pos2::ZERO, WORKFLOW_SIZE));
+        let visible_scale = |corner| {
+            let bounds = scene.union(Rect::from_min_size(corner, WORKFLOW_SIZE));
+            (area.width() / bounds.width()).min(area.height() / bounds.height())
+        };
+        let corner = if visible_scale(below) > visible_scale(beside) {
+            below
+        } else {
+            beside
+        };
+        self.expanded_workflow = Some((node, corner - anchor));
+        self.fit_expanded_workflow = true;
+        show_workflow(&id);
+    }
+
+    pub(crate) fn close_workflow(&mut self, id: &str) {
+        if self.expanded_workflow.is_some_and(|(node, _)| {
+            self.workflow(node)
+                .is_some_and(|workflow| workflow.id == id)
+        }) {
+            self.expanded_workflow = None;
+        }
+    }
+
+    pub(crate) fn pan_workflow(&mut self, [x, y]: [f32; 2]) {
+        self.pan += vec2(x, y);
+    }
+
+    pub(crate) fn zoom_workflow(&mut self, [x, y, delta]: [f32; 3]) {
+        if let Some(area) = self.canvas_area {
+            self.zoom_at(area, pos2(x, y), (delta * -0.004).exp());
+        }
+    }
+
     fn fit(&mut self, area: Rect, selection: bool) {
         let chosen = selection && (!self.group.is_empty() || !self.selected_dots.is_empty());
         let mut bounds = Rect::NOTHING;
@@ -1073,6 +1254,11 @@ impl Graph {
             {
                 bounds = bounds.union(Rect::from_center_size(point, vec2(128.0, 76.0)));
             }
+        }
+        if let Some((node, frame)) = self.workflow_frame()
+            && (!chosen || self.group.contains(&node))
+        {
+            bounds = bounds.union(frame);
         }
         for (index, dot) in self.dots.iter().enumerate() {
             if !chosen || self.selected_dots.contains(&index) {
@@ -1213,6 +1399,21 @@ impl Graph {
         slots: &mut ViewerSlots,
     ) -> bool {
         let area = Rect::from_min_max(bounds.min + vec2(0.0, 37.0), bounds.max).intersect(bounds);
+        self.canvas_area = Some(area);
+        if std::mem::take(&mut self.fit_expanded_workflow) {
+            self.fit(area, false);
+        }
+        if let Some(node) = self.reveal_workflow.take()
+            && let Some(position) = self.position(node)
+        {
+            let center = area.center() + self.pan + position.to_vec2() * self.zoom;
+            if !area
+                .shrink(12.0)
+                .contains_rect(Rect::from_center_size(center, node_size(node) * self.zoom))
+            {
+                self.pan = -position.to_vec2() * self.zoom;
+            }
+        }
         let dot_count = self.dots.len();
         self.dots.retain(|dot| {
             dot.viewer_slot.is_none_or(|index| {
@@ -1331,6 +1532,14 @@ impl Graph {
                 self.add_dot();
             }
             if ui
+                .add_enabled(editable, egui::Button::new("Import workflow"))
+                .on_hover_text("Import a ComfyUI workflow or API JSON file")
+                .clicked()
+            {
+                self.workflow_error.clear();
+                choose_workflow();
+            }
+            if ui
                 .button("Fit")
                 .on_hover_text("Fit graph · F fits selection")
                 .clicked()
@@ -1344,6 +1553,13 @@ impl Graph {
                     .clicked()
             {
                 slots.active = None;
+            }
+            if !self.workflow_error.is_empty() {
+                ui.add(
+                    egui::Label::new(RichText::new(&self.workflow_error).color(Color32::LIGHT_RED))
+                        .truncate(),
+                )
+                .on_hover_text(&self.workflow_error);
             }
         });
 
@@ -1413,6 +1629,22 @@ impl Graph {
         let scale = self.zoom;
         let origin = area.center() + self.pan;
         let pixel = |point: Pos2| origin + point.to_vec2() * scale;
+        if let Some((node, frame)) = self.workflow_frame()
+            && let Some(anchor) = self.position(node)
+        {
+            let (from, to) = if frame.left() > anchor.x {
+                (
+                    anchor + vec2(node_size(node).x / 2.0, 0.0),
+                    frame.left_top() + vec2(0.0, 16.0),
+                )
+            } else {
+                (
+                    anchor + vec2(0.0, node_size(node).y / 2.0),
+                    pos2(anchor.x, frame.top()),
+                )
+            };
+            painter.line_segment([pixel(from), pixel(to)], Stroke::new(1.0, node.accent()));
+        }
         let boxes: Vec<_> = self
             .nodes
             .iter()
@@ -1686,7 +1918,112 @@ impl Graph {
                 viewed == Some(kind),
             );
 
-            if kind.kind != NodeKind::Viewer && kind.kind != NodeKind::Output {
+            if kind.kind == NodeKind::AlphaGen && scale >= 0.40 {
+                let symbol = self.heimlich_symbol.get_or_insert_with(|| {
+                    let image = image::load_from_memory(include_bytes!("heimlich-symbol.png"))
+                        .expect("valid bundled HEIMLICH symbol")
+                        .into_rgba8();
+                    ui.ctx().load_texture(
+                        "heimlich-symbol",
+                        egui::ColorImage::from_rgba_unmultiplied(
+                            [image.width() as usize, image.height() as usize],
+                            image.as_raw(),
+                        ),
+                        egui::TextureOptions::LINEAR,
+                    )
+                });
+                painter.image(
+                    symbol.id(),
+                    Rect::from_center_size(
+                        rect.left_center() + vec2(23.0, 0.0) * scale,
+                        vec2(30.0, 30.0 * 112.0 / 256.0) * scale,
+                    ),
+                    Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+
+            if self.has_warning(kind) {
+                let center = rect.left_top() + vec2(3.0, 2.0);
+                let badge = ui.interact(
+                    Rect::from_center_size(center, Vec2::splat(20.0)),
+                    ui.id().with(("warning", kind)),
+                    egui::Sense::click(),
+                );
+                let hint = self
+                    .warnings(kind)
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or_default();
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        center + vec2(0.0, -9.0),
+                        center + vec2(9.0, 7.0),
+                        center + vec2(-9.0, 7.0),
+                    ],
+                    WARNING,
+                    Stroke::new(1.0, Color32::from_gray(34)),
+                ));
+                painter.text(
+                    center + vec2(0.0, 2.0),
+                    egui::Align2::CENTER_CENTER,
+                    "!",
+                    egui::FontId::monospace(12.0),
+                    Color32::from_gray(25),
+                );
+                if badge.on_hover_text(hint).clicked() {
+                    self.select_node(kind, false);
+                    self.open_properties(kind);
+                }
+            }
+
+            if let Some(workflow) = self.workflow(kind) {
+                let expanded = self.expanded_workflow.is_some_and(|(node, _)| node == kind);
+                let button = Rect::from_center_size(
+                    rect.right_center() - vec2(14.0 * scale, 0.0),
+                    Vec2::splat(21.0 * scale),
+                );
+                let response = ui.interact(
+                    button,
+                    ui.id().with(("workflow", kind)),
+                    egui::Sense::click(),
+                );
+                painter.text(
+                    button.center(),
+                    egui::Align2::CENTER_CENTER,
+                    if expanded { "−" } else { "+" },
+                    egui::FontId::proportional(17.0 * scale),
+                    Color32::WHITE,
+                );
+                if scale >= 0.58 {
+                    painter.with_clip_rect(area.intersect(rect)).text(
+                        rect.center_bottom() - vec2(0.0, 10.0) * scale,
+                        egui::Align2::CENTER_CENTER,
+                        format!(
+                            "{} in · {} out",
+                            workflow.inputs.len(),
+                            workflow.outputs.len()
+                        ),
+                        egui::FontId::proportional(9.0 * scale.min(3.0)),
+                        Color32::from_gray(194),
+                    );
+                }
+                if response
+                    .on_hover_text(if expanded {
+                        "Collapse workflow"
+                    } else {
+                        "Expand workflow"
+                    })
+                    .clicked()
+                {
+                    self.toggle_workflow(kind);
+                    ui.ctx().request_repaint();
+                }
+            }
+            if !matches!(
+                kind.kind,
+                NodeKind::Viewer | NodeKind::Output | NodeKind::Workflow
+            ) {
                 let (point, toward) = output_tails
                     .iter()
                     .find(|(node, _, _)| *node == kind)
@@ -1718,7 +2055,10 @@ impl Graph {
                     );
                 }
             }
-            if kind.kind != NodeKind::Viewer && kind.kind != NodeKind::Source {
+            if !matches!(
+                kind.kind,
+                NodeKind::Viewer | NodeKind::Source | NodeKind::Workflow
+            ) {
                 let (tip, upstream) = input_tips
                     .iter()
                     .find(|(node, _, _)| *node == kind)
@@ -2065,6 +2405,19 @@ impl Graph {
             }
         }
         self.draw_navigator(ui, &painter, area, pointer, press_origin);
+        if let Some((_, frame)) = self.workflow_frame() {
+            let top_left = area.center() + self.pan + frame.min.to_vec2() * self.zoom;
+            position_workflow(
+                top_left.x,
+                top_left.y,
+                frame.width(),
+                frame.height(),
+                self.zoom,
+            );
+        } else {
+            self.expanded_workflow = None;
+            position_workflow(0.0, 0.0, 0.0, 0.0, self.zoom);
+        }
         if let Some((viewer, index)) = activate_slot {
             slots.use_viewer(viewer);
             slots.active = Some(index);
@@ -2094,6 +2447,19 @@ impl Graph {
         editable: bool,
         slots: &mut ViewerSlots,
     ) {
+        if self.has_warning(kind) {
+            ui.label(RichText::new("Diagnostics").strong().color(WARNING));
+            for warning in self.warnings(kind) {
+                ui.label(RichText::new(warning).monospace().size(11.0));
+            }
+            if kind.kind == NodeKind::AlphaGen {
+                ui.weak("Start ComfyUI or install the listed dependency, then recheck.");
+            }
+            if self.workflow(kind).is_some() && ui.button("Review workflow issues").clicked() {
+                self.toggle_workflow(kind);
+            }
+            ui.separator();
+        }
         let mut disabled = self.is_disabled(kind);
         if ui
             .add_enabled(editable, egui::Checkbox::new(&mut disabled, "Disabled (D)"))
@@ -2174,6 +2540,33 @@ impl Graph {
                 NodeKind::Output => {
                     ui.label("MP4 · H.264");
                 }
+                NodeKind::Workflow => {
+                    if let Some(workflow) = self.workflow(kind) {
+                        for (label, ports) in
+                            [("Inputs", &workflow.inputs), ("Outputs", &workflow.outputs)]
+                        {
+                            ui.strong(label);
+                            if ports.is_empty() {
+                                ui.weak("None exposed");
+                            }
+                            for port in ports {
+                                ui.label(port);
+                            }
+                        }
+                        let expanded = self.expanded_workflow.is_some_and(|(node, _)| node == kind);
+                        if ui
+                            .button(if expanded {
+                                "Collapse workflow"
+                            } else {
+                                "Expand workflow"
+                            })
+                            .clicked()
+                        {
+                            self.toggle_workflow(kind);
+                        }
+                        ui.weak("Export the edited workflow to render it in ComfyUI.");
+                    }
+                }
                 NodeKind::Viewer => unreachable!(),
             }
             if kind.kind != NodeKind::Source
@@ -2196,6 +2589,8 @@ impl Graph {
 fn node_size(kind: Node) -> Vec2 {
     match kind.kind {
         NodeKind::Viewer => vec2(112.0, 44.0),
+        NodeKind::AlphaGen => vec2(130.0, 32.0),
+        NodeKind::Workflow => vec2(156.0, 48.0),
         _ => vec2(118.0, 32.0),
     }
 }
@@ -2361,6 +2756,8 @@ fn node_face(
     let yellow_write = kind.kind == NodeKind::Output && !disabled;
     let (bright, dark) = if yellow_write {
         (accent, Color32::from_rgb(193, 147, 33))
+    } else if kind.kind == NodeKind::AlphaGen && !disabled {
+        (accent, accent)
     } else {
         (
             blend(
@@ -2431,17 +2828,35 @@ fn node_face(
         return;
     }
     let font_scale = scale.min(4.0);
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        name,
-        egui::FontId::proportional(13.0 * font_scale),
-        if yellow_write {
-            Color32::from_gray(24)
-        } else {
-            Color32::from_gray(239)
-        },
-    );
+    let title_bounds = match kind.kind {
+        NodeKind::Workflow => Rect::from_min_max(
+            rect.min + vec2(4.0, 0.0) * scale,
+            rect.max - vec2(28.0, 0.0) * scale,
+        ),
+        NodeKind::AlphaGen => Rect::from_min_max(
+            rect.min + vec2(43.0, 0.0) * scale,
+            rect.max - vec2(5.0, 0.0) * scale,
+        ),
+        _ => rect,
+    };
+    let title_center = if kind.kind == NodeKind::Workflow {
+        title_bounds.center() - vec2(0.0, 6.0) * scale
+    } else {
+        title_bounds.center()
+    };
+    painter
+        .with_clip_rect(title_bounds.intersect(painter.clip_rect()))
+        .text(
+            title_center,
+            egui::Align2::CENTER_CENTER,
+            name,
+            egui::FontId::proportional(13.0 * font_scale),
+            if yellow_write {
+                Color32::from_gray(24)
+            } else {
+                Color32::from_gray(239)
+            },
+        );
     if disabled {
         let cross = Stroke::new(1.5, Color32::from_gray(210));
         painter.line_segment([rect.left_top(), rect.right_bottom()], cross);

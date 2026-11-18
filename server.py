@@ -70,6 +70,41 @@ async def status(request):
     return web.json_response({"ready": not missing, "missing": missing})
 
 
+def model_choices(node_info):
+    choices = {}
+    for fields in node_info.get("input", {}).values():
+        for name, config in fields.items():
+            if not re.fullmatch(r"(?:ckpt|checkpoint|unet|model|diffusion_model|vae|clip|lora|control_net|upscale_model|style_model|text_encoder|vision_model)_name\d*", name):
+                continue
+            if not isinstance(config, list) or not config:
+                continue
+            values = config[0]
+            if values == "COMBO" and len(config) > 1 and isinstance(config[1], dict):
+                values = config[1].get("options")
+            if isinstance(values, list) and all(isinstance(value, str) for value in values):
+                choices[name] = values
+    return choices
+
+
+@routes.post("/api/workflow-diagnostics")
+async def workflow_diagnostics(request):
+    try:
+        classes = await request.json()
+    except (ValueError, UnicodeError) as exc:
+        raise web.HTTPBadRequest(text="The node type list could not be read.") from exc
+    if not isinstance(classes, list) or len(classes) > 5000 or any(
+        not isinstance(name, str) or len(name) > 200 for name in classes
+    ):
+        raise web.HTTPBadRequest(text="The node type list was invalid.")
+    status, catalog = await engine(request.app, "/object_info")
+    if status != 200 or not isinstance(catalog, dict) or not catalog:
+        raise web.HTTPServiceUnavailable(text="ComfyUI did not return its node and model inventory.")
+    return web.json_response({
+        name: model_choices(catalog[name]) if name in catalog else None
+        for name in dict.fromkeys(classes)
+    })
+
+
 def processing_dimensions(width, height):
     scale = min(1, 1920 / width, 1088 / height)
     return max(2, int(width * scale + 1e-8) // 2 * 2), max(2, int(height * scale + 1e-8) // 2 * 2)

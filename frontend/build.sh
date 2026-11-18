@@ -29,6 +29,7 @@ mkdir "$stage/assets"
 cargo build --locked --release --target wasm32-unknown-unknown
 "${WASM_BINDGEN_BIN:-wasm-bindgen}" --target web --no-typescript --out-name okapi --out-dir "$stage/assets" target/wasm32-unknown-unknown/release/okapi_workspace.wasm
 cp src/fonts/InstrumentSerif-{OFL.txt,Regular.ttf} "$stage/assets/"
+cp src/workflow-editor.{js,css} src/workflow-{diagnostics,graph}.js "$stage/assets/"
 
 # Keep the asset ID numeric so already-open versions can detect the update.
 build=$(python3 - "$next_version" "$stage/assets" <<'PY'

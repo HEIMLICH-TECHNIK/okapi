@@ -26,6 +26,8 @@ let clipPlayback;
 let workspaceTyping = false;
 let viewerBounds;
 let graphBounds;
+let workflowFrame;
+let requestedWorkflow;
 let pointerPosition;
 let controlPressed = false;
 let elbowModifier = false;
@@ -55,6 +57,21 @@ export function bindBrowser(callback) {
     if (file) upload(file);
   });
   input().addEventListener('cancel', () => { choosingFile = false; });
+  const workflowFile = document.getElementById('okapi-workflow-file');
+  workflowFile.addEventListener('change', async () => {
+    const file = workflowFile.files[0];
+    workflowFile.value = '';
+    if (!file) return;
+    try {
+      const { importWorkflow, checkWorkflow } = await workflowEditor();
+      const imported = await importWorkflow(file);
+      send('workflow_import', imported);
+      const checked = await checkWorkflow(imported.id);
+      if (checked) send('workflow_updated', checked);
+    } catch (error) {
+      send('workflow_error', error.message);
+    }
+  });
   for (const type of ['pointerdown', 'pointerup', 'keydown', 'wheel']) {
     document.addEventListener(type, () => { lastInteraction = performance.now(); }, { passive: true, capture: true });
   }
@@ -82,6 +99,7 @@ export function bindBrowser(callback) {
     controlPressed = event.ctrlKey;
     updateElbowModifier((event.ctrlKey || event.metaKey) && !aboutDialog().open && !profileMenuOpen());
     if (event.repeat || aboutDialog().open || profileMenuOpen() ||
+        event.target.closest?.('#okapi-workflow-editor') ||
         event.target.closest?.('#okapi-profile-button')) return;
     const key = event.key;
     const element = surface();
@@ -314,6 +332,82 @@ export function setWorkspaceTyping(typing) {
 export function chooseFile() {
   choosingFile = true;
   input().click();
+}
+
+function workflowEditor() {
+  const build = document.querySelector('meta[name="okapi-build"]').content;
+  return import(`/okapi/assets/${build}/workflow-editor.js`);
+}
+
+export function chooseWorkflow() {
+  document.getElementById('okapi-workflow-file').click();
+}
+
+export async function showWorkflow(id) {
+  requestedWorkflow = id;
+  document.getElementById('okapi-workflow-editor')?.dispatchEvent(new Event('workflow-close'));
+  try {
+    const { openWorkflow } = await workflowEditor();
+    await openWorkflow(id, {
+      layer: document.getElementById('okapi-workflow-layer'),
+      isCurrent: () => requestedWorkflow === id && !!graphBounds && !!workflowFrame,
+      change: summary => send('workflow_updated', summary),
+      close: () => send('workflow_closed', id),
+      pan: delta => send('workflow_pan', delta),
+      zoom: event => {
+        const canvas = document.getElementById('okapi-workspace').getBoundingClientRect();
+        const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.height : 1;
+        send('workflow_zoom', [event.clientX - canvas.left, event.clientY - canvas.top, event.deltaY * unit]);
+      },
+      position: updateWorkflowPosition,
+    });
+  } catch (error) {
+    if (requestedWorkflow === id) {
+      send('workflow_error', error.message);
+      send('workflow_closed', id);
+    }
+  }
+}
+
+function updateWorkflowPosition() {
+  const layer = document.getElementById('okapi-workflow-layer');
+  const editor = document.getElementById('okapi-workflow-editor');
+  if (!editor) return;
+  if (!graphBounds || !workflowFrame) {
+    editor.dispatchEvent(new Event('workflow-close'));
+    return;
+  }
+  const { left, top, right, bottom } = graphBounds;
+  const clipTop = top + 37;
+  const [x, y, width, height, zoom] = workflowFrame;
+  layer.style.cssText = `left:${left}px;top:${clipTop}px;width:${right - left}px;height:${Math.max(0, bottom - clipTop)}px`;
+  editor.style.cssText = `width:${width}px;height:${height}px;transform:translate(${x - left}px,${y - clipTop}px) scale(${zoom})`;
+  layer.hidden = false;
+}
+
+export function positionWorkflow(x, y, width, height, zoom) {
+  if (!width || !height) {
+    if (workflowFrame) {
+      workflowFrame = undefined;
+      requestedWorkflow = undefined;
+      updateWorkflowPosition();
+    }
+    return;
+  }
+  const canvas = document.getElementById('okapi-workspace').getBoundingClientRect();
+  const next = [x + canvas.left, y + canvas.top, width, height, zoom];
+  if (workflowFrame && next.every((value, index) => value === workflowFrame[index])) return;
+  workflowFrame = next;
+  updateWorkflowPosition();
+}
+
+export async function removeWorkflow(id) {
+  try {
+    const { deleteWorkflow } = await workflowEditor();
+    await deleteWorkflow(id);
+  } catch (error) {
+    send('workflow_error', error.message);
+  }
 }
 
 export function connectJob(job) {
@@ -672,13 +766,22 @@ function syncSeekBar() {
 }
 
 export function positionGraph(x, y, width, height) {
+  const before = graphBounds;
   if (!width || !height) {
     graphBounds = null;
-    return;
+  } else {
+    const canvas = document.getElementById('okapi-workspace').getBoundingClientRect();
+    graphBounds = { left: canvas.left + x, top: canvas.top + y,
+      right: canvas.left + x + width, bottom: canvas.top + y + height };
   }
-  const canvas = document.getElementById('okapi-workspace').getBoundingClientRect();
-  graphBounds = { left: canvas.left + x, top: canvas.top + y,
-    right: canvas.left + x + width, bottom: canvas.top + y + height };
+  if (before !== graphBounds && (!before || !graphBounds ||
+      Object.keys(graphBounds).some(edge => graphBounds[edge] !== before[edge]))) {
+    if (!graphBounds) {
+      requestedWorkflow = undefined;
+      workflowFrame = undefined;
+    }
+    updateWorkflowPosition();
+  }
 }
 
 export function positionMedia(x, y, width, height) {

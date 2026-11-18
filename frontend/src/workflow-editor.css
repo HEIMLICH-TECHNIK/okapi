@@ -1,0 +1,45 @@
+#okapi-workflow-layer{position:fixed;z-index:2;overflow:hidden;pointer-events:none}
+#okapi-workflow-editor{position:absolute;left:0;top:0;transform-origin:0 0;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;pointer-events:auto;color:#e2e5ed;background:#1b1c21;border:1px solid #785f90;border-radius:5px;overflow:hidden}
+.workflow-header,.workflow-tools{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid #383b46}
+.workflow-header h2,.workflow-path{flex:1;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.workflow-header h2{font-size:15px}
+.workflow-path{color:#aeb6c9}
+#okapi-workflow-editor button{color:inherit;background:#2b2e38;border:1px solid #454b5d;border-radius:4px;padding:4px 8px;font:inherit;cursor:pointer}
+#okapi-workflow-editor button:hover,#okapi-workflow-editor button:focus-visible{background:#3c465f;outline-color:#9eb7ff}
+.workflow-body{display:grid;grid-template-columns:minmax(0,1fr) clamp(155px,25%,250px);min-height:0}
+.workflow-viewport{position:relative;min-width:0;min-height:0}
+.workflow-scroll{position:absolute;inset:0;overflow:auto;background:#17181d radial-gradient(#353949 1px,transparent 1px) 0 0/18px 18px}
+.workflow-extent{position:relative;overflow:hidden}
+.workflow-layout{position:absolute;inset:0 auto auto 0;transform-origin:0 0}
+.workflow-wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.workflow-card{position:absolute;width:235px;color:#e0e5ef;background:#262934;border:1px solid #48516a;border-radius:5px;box-shadow:0 3px 12px #0005}
+.workflow-card-title{display:flex;align-items:center;gap:6px;padding:5px 9px;min-height:28px;background:#343d54;border-radius:4px 4px 0 0;cursor:grab;touch-action:none;user-select:none}
+.workflow-card-title strong{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.workflow-group-card{border-color:#785f90}
+.workflow-group-card .workflow-card-title{background:#534366}
+#okapi-workflow-editor .workflow-card-title button{padding:0 6px}
+#okapi-workflow-editor .workflow-warning{position:absolute;left:-12px;top:-12px;padding:2px 0 0;width:25px;height:24px;display:grid;place-items:center;background:#f6be4f;color:#271c0a;border:0;border-radius:0;clip-path:polygon(50% 0,100% 100%,0 100%);font-weight:800}
+#okapi-workflow-editor .workflow-warning:hover,#okapi-workflow-editor .workflow-warning:focus-visible{background:#ffd989}
+.workflow-card-ports{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:3px;padding:5px 0}
+.workflow-column{display:flex;flex-direction:column;align-items:stretch}
+#okapi-workflow-editor .workflow-socket{position:relative;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:transparent;border:0;padding:3px 12px;text-align:left;font-size:11px}
+#okapi-workflow-editor .workflow-output .workflow-socket{text-align:right}
+#okapi-workflow-editor .workflow-socket::before{content:'';position:absolute;top:50%;left:2px;width:6px;height:6px;transform:translateY(-50%);border-radius:50%;background:#9fb6ff}
+#okapi-workflow-editor .workflow-output .workflow-socket::before{left:auto;right:2px}
+#okapi-workflow-editor .workflow-widget::before{border-radius:1px;background:#8390a9}
+#okapi-workflow-editor .workflow-socket:hover,#okapi-workflow-editor .workflow-socket.selected{background:#414e74}
+.workflow-details{padding:10px;overflow:auto;border-left:1px solid #383b46}
+.workflow-details h3{margin:0 0 8px;font-size:13px;overflow-wrap:anywhere}
+.workflow-details h3:not(:first-child){margin-top:16px}
+.workflow-details h4{margin:8px 0 4px;font-size:11px;color:#b7c0d6}
+.workflow-details p{margin:3px 0}
+.workflow-details button,.workflow-details textarea{margin-bottom:6px}
+.workflow-details textarea{width:100%;min-height:52px;color:inherit;background:#13151a;border:1px solid #454b5d}
+.workflow-port-row{display:flex;justify-content:space-between;align-items:baseline;gap:5px;padding:3px 0;overflow-wrap:anywhere}
+.workflow-port-row code,.workflow-muted{color:#a4aec8;font-size:10px}
+.workflow-diagnostics{margin:6px 0 14px;border-top:1px solid #4f4534}
+.workflow-diagnostic{padding:8px 0;border-bottom:1px solid #383b46}
+.workflow-diagnostic-log{overflow-wrap:anywhere;color:#ffd48c;font:11px/1.5 ui-monospace,monospace}
+.workflow-diagnostic select{display:block;width:100%;margin:6px 0;padding:4px;color:inherit;background:#292d38;border:1px solid #454b5d}
+.workflow-status{padding:6px 12px;min-height:27px;border-top:1px solid #383b46;color:#c0cced}
+@media(max-width:560px){.workflow-body{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) minmax(115px,28%)}.workflow-details{border-left:0;border-top:1px solid #383b46}}

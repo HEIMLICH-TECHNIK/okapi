@@ -67,6 +67,8 @@ impl LayoutPreferences {
 #[derive(Deserialize)]
 struct Engine {
     ready: bool,
+    #[serde(default)]
+    missing: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -369,6 +371,32 @@ impl Workspace {
 
     fn browser_event(&mut self, kind: &str, payload: &str) {
         match kind {
+            "workflow_import" | "workflow_updated" => {
+                if let Ok(workflow) = serde_json::from_str(payload) {
+                    self.graph
+                        .update_workflow(workflow, kind == "workflow_import");
+                }
+            }
+            "workflow_error" => {
+                let message = serde_json::from_str(payload)
+                    .unwrap_or_else(|_| "Workflow import failed.".into());
+                self.graph.workflow_error(message);
+            }
+            "workflow_closed" => {
+                if let Ok(id) = serde_json::from_str::<String>(payload) {
+                    self.graph.close_workflow(&id);
+                }
+            }
+            "workflow_pan" => {
+                if let Ok(delta) = serde_json::from_str(payload) {
+                    self.graph.pan_workflow(delta);
+                }
+            }
+            "workflow_zoom" => {
+                if let Ok(zoom) = serde_json::from_str(payload) {
+                    self.graph.zoom_workflow(zoom);
+                }
+            }
             "upload_start" => {
                 self.uploading = true;
                 self.job.clear();
@@ -670,7 +698,12 @@ impl Workspace {
                                 }
                             } else {
                                 let name = self.graph.name(kind);
-                                let title = RichText::new(&name).strong().color(kind.accent());
+                                let color = if kind.kind == NodeKind::AlphaGen {
+                                    Color32::from_rgb(172, 168, 255)
+                                } else {
+                                    kind.accent()
+                                };
+                                let title = RichText::new(&name).strong().color(color);
                                 let label = ui
                                     .add(egui::Button::new(title).frame_when_inactive(false))
                                     .on_hover_cursor(egui::CursorIcon::Text)
@@ -705,6 +738,20 @@ impl Workspace {
                             match kind.kind {
                                 NodeKind::Source => self.source_controls(ui),
                                 NodeKind::Output => self.render_controls(ui, Some(kind)),
+                                NodeKind::AlphaGen if self.graph.has_warning(kind) => {
+                                    ui.horizontal_wrapped(|ui| {
+                                        if ui.button("Recheck ComfyUI").clicked() {
+                                            self.next_engine = 0.0;
+                                        }
+                                        ui.add(
+                                            egui::Hyperlink::from_label_and_url(
+                                                "Open ComfyUI ↗",
+                                                COMFYUI_URL,
+                                            )
+                                            .open_in_new_tab(true),
+                                        );
+                                    });
+                                }
                                 _ => {}
                             }
                         }
@@ -1236,7 +1283,18 @@ impl eframe::App for Workspace {
                     }
                 }
                 Event::Browser(kind, payload) => self.browser_event(&kind, &payload),
-                Event::Engine(result) => self.engine = result.ok().map(|engine| engine.ready),
+                Event::Engine(result) => {
+                    self.engine = result.as_ref().ok().map(|engine| engine.ready);
+                    let messages = match result {
+                        Ok(engine) => engine
+                            .missing
+                            .into_iter()
+                            .map(|name| format!("Required model or node unavailable: {name}"))
+                            .collect(),
+                        Err(error) => vec![error],
+                    };
+                    self.graph.set_engine_warnings(messages);
+                }
                 Event::Submitted(job, result) => {
                     self.submitting = false;
                     if let Some(id) = job
@@ -1383,6 +1441,9 @@ impl eframe::App for Workspace {
             let state = match self.engine {
                 Some(true) => "ComfyUI · Ready",
                 Some(false) => "ComfyUI · Unavailable",
+                None if self.graph.has_warning(Node::first(NodeKind::AlphaGen)) => {
+                    "ComfyUI · Unavailable"
+                }
                 None => "Connecting to ComfyUI…",
             };
             ui.label(
