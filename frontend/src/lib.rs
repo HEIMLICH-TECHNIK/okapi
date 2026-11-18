@@ -37,6 +37,8 @@ extern "C" {
     fn set_sound_enabled(enabled: bool);
     #[wasm_bindgen(js_name = showAbout)]
     fn show_about();
+    #[wasm_bindgen(js_name = setWorkspaceGeometry)]
+    fn set_workspace_geometry(width: f32, height: f32);
     #[wasm_bindgen(js_name = positionProfile)]
     fn position_profile(x: f32, y: f32, width: f32, height: f32);
     #[wasm_bindgen(js_name = positionMedia)]
@@ -49,6 +51,8 @@ extern "C" {
     fn fit_viewer();
     #[wasm_bindgen(js_name = openDownload)]
     fn open_download(job: &str);
+    #[wasm_bindgen(js_name = openMediaProperties)]
+    fn open_media_properties(job: &str, kind: &str);
     #[wasm_bindgen(js_name = workspaceReady)]
     fn workspace_ready();
     #[wasm_bindgen(js_name = restoredWorkspace)]
@@ -115,4 +119,16 @@ fn wgpu_setup() -> eframe::egui_wgpu::WgpuSetup {
     let mut options = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     options.instance_descriptor.backends = wgpu::Backends::GL;
     eframe::egui_wgpu::WgpuSetup::CreateNew(options)
+}
+
+
+#[wasm_bindgen]
+pub fn ocio_shader_to_wgsl(source: &str) -> Result<String, JsValue> {
+    let module = naga::front::glsl::Frontend::default()
+        .parse(&naga::front::glsl::Options::from(naga::ShaderStage::Fragment), source)
+        .map_err(|error| JsValue::from_str(&error.emit_to_string(source)))?;
+    let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module).map_err(|error| JsValue::from_str(&format!("{error:?}")))?;
+    naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::EXPLICIT_TYPES)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
 }

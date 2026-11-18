@@ -10,9 +10,9 @@ use crate::set_compact_viewer;
 use crate::viewer_slots::{CachedPreview, PreviewState, SLOT_COUNT, ViewerSlots, same_settings};
 use crate::{
     apply_workspace_update, bind_browser, choose_file, connect_job, fit_viewer, new_version,
-    open_download, position_graph, position_media, position_profile, request, restored_workspace,
-    set_file_enabled, set_media_visible, set_sound_enabled, set_time_display, set_workspace_typing,
-    show_about, show_media, submit_graph, workspace_ready,
+    open_download, open_media_properties, position_graph, position_media, position_profile,
+    request, restored_workspace, set_file_enabled, set_media_visible, set_sound_enabled,
+    set_time_display, set_workspace_geometry, set_workspace_typing, show_about, show_media, submit_graph, workspace_ready,
 };
 
 const AMBER: Color32 = Color32::from_rgb(139, 171, 255);
@@ -92,6 +92,8 @@ struct Upload {
     media: Media,
     original: Option<Size>,
     total_segments: u32,
+    #[serde(default)]
+    precision: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -105,6 +107,8 @@ struct Job {
     prompt: Option<String>,
     error: Option<String>,
     settings: Option<crate::graph::Settings>,
+    #[serde(default)]
+    precision: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -177,6 +181,7 @@ pub struct Workspace {
     restore_preview: bool,
     layout: LayoutPreferences,
     result_is_matte: bool,
+    precision_media: bool,
     full_settings: Option<Settings>,
     job: String,
     filename: String,
@@ -282,6 +287,7 @@ impl Workspace {
             restore_preview,
             layout: LayoutPreferences::restore(),
             result_is_matte: false,
+            precision_media: false,
             full_settings: None,
             job,
             filename: String::new(),
@@ -314,12 +320,12 @@ impl Workspace {
     }
 
     fn can_run(&self, write: Option<Node>) -> bool {
-        self.engine.is_some()
-            && write
-                .and_then(|node| self.graph.settings_for_write(node))
-                .is_some_and(|settings| {
-                    !settings.operations.contains(&NodeKind::AlphaGen) || self.engine == Some(true)
-                })
+        write
+            .and_then(|node| self.graph.settings_for_write(node))
+            .is_some_and(|settings| {
+                !settings.operations.contains(&NodeKind::AlphaGen)
+                    || (!self.precision_media && self.engine == Some(true))
+            })
             && !self.busy()
             && self.media.is_some()
             && matches!(
@@ -423,6 +429,7 @@ impl Workspace {
             "upload_done" => {
                 self.uploading = false;
                 if let Ok(upload) = serde_json::from_str::<Upload>(payload) {
+                    self.precision_media = upload.precision.is_some();
                     self.job = upload.id;
                     save_job_id(&self.job);
                     self.media = Some(upload.media);
@@ -445,6 +452,12 @@ impl Workspace {
                 self.next_job = 0.0;
             }
             "preview_error" => self.notice = serde_json::from_str(payload).unwrap_or_default(),
+            "media_color_changed" => {
+                self.slots.new_clip();
+                self.full_settings = None;
+                self.notice =
+                    "Source color settings changed. Render again to update the output.".into();
+            }
             "viewer_clock" => {
                 self.viewer_clock = serde_json::from_str(payload).unwrap_or_default();
             }
@@ -459,6 +472,17 @@ impl Workspace {
             return;
         };
         let data = &event["data"];
+        if self.precision_media && data["job_id"].as_str() == Some(self.job.as_str()) {
+            if let (Some(value), Some(max)) = (data["value"].as_f64(), data["max"].as_f64())
+                && max > 0.0
+            {
+                self.denoise_progress = Some((value / max).clamp(0.0, 0.995) as f32);
+            }
+            if matches!(data["state"].as_str(), Some("complete" | "failed")) {
+                self.next_job = 0.0;
+            }
+            return;
+        }
         if !self.busy()
             || self.prompt.is_none()
             || data["prompt_id"].as_str() != self.prompt.as_deref()
@@ -481,6 +505,7 @@ impl Workspace {
     }
 
     fn apply_job(&mut self, job: Job) {
+        self.precision_media = job.precision.is_some();
         let phase_before = self.phase;
         self.filename = job.name;
         self.media = Some(job.media);
@@ -791,6 +816,9 @@ impl Workspace {
                 .size(12.0),
             );
         });
+        if self.precision_media && ui.button("Read color settings…").clicked() {
+            open_media_properties(&self.job, "read");
+        }
         if let Some(media) = &self.media {
             ui.label(
                 RichText::new(format!(
@@ -819,7 +847,7 @@ impl Workspace {
             }
         } else {
             ui.label(
-                RichText::new("Auto-resize · 9+ frames · 250 MB")
+                RichText::new("Original resolution · float IO")
                     .color(MUTED)
                     .size(11.0),
             );
@@ -828,6 +856,13 @@ impl Workspace {
 
     fn render_controls(&mut self, ui: &mut Ui, write: Option<Node>) {
         let write = write.or_else(|| self.graph.primary(NodeKind::Output));
+        if self.precision_media
+            && write
+                .and_then(|node| self.graph.settings_for_write(node))
+                .is_some_and(|settings| settings.operations.contains(&NodeKind::AlphaGen))
+        {
+            ui.label(RichText::new("Alpha Gen requires an explicit SDR model adapter. Float Read, Blur, Mirror, Invert and Write are available.").color(AMBER));
+        }
         if ui
             .add_enabled(
                 self.can_run(write),
@@ -876,7 +911,9 @@ impl Workspace {
         }
         if self.phase == Phase::Complete
             && ui
-                .button(if self.result_is_matte {
+                .button(if self.precision_media {
+                    "Export EXR / ProRes / float video"
+                } else if self.result_is_matte {
                     "Download matte"
                 } else {
                     "Download video"
@@ -921,8 +958,8 @@ impl Workspace {
         self.media.is_some()
             && !self.uploading
             && !self.submitting
-            && self.engine.is_some()
-            && (!settings.operations.contains(&NodeKind::AlphaGen) || self.engine == Some(true))
+            && (!settings.operations.contains(&NodeKind::AlphaGen)
+                || (!self.precision_media && self.engine == Some(true)))
             && !self.full_render_matches(settings)
             && self.slots.in_flight() < SLOT_COUNT
             && !matches!(
@@ -1003,6 +1040,17 @@ impl Workspace {
         ui.add_space(8.0);
         ui.heading("Settings");
         ui.separator();
+        ui.add_space(8.0);
+        ui.label(RichText::new("Project Color Management").strong());
+        if ui
+            .add_enabled(
+                self.precision_media,
+                egui::Button::new("OCIO config and Working Space…"),
+            )
+            .clicked()
+        {
+            open_media_properties(&self.job, "project");
+        }
         ui.add_space(8.0);
         ui.label(RichText::new("Workspace").strong());
         ui.add_space(6.0);
@@ -1244,6 +1292,8 @@ impl Workspace {
 
 impl eframe::App for Workspace {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let extent = ctx.content_rect().size();
+        set_workspace_geometry(extent.x, extent.y);
         let time = ctx.input(|input| input.time);
         let events = std::mem::take(&mut *self.inbox.borrow_mut());
         for event in events {

@@ -1,11 +1,11 @@
 [Unit]
-Description=okapi Alpha Gen workspace
+Description=okapi media workspace
 After=comfyui.service
 
 [Service]
 Type=simple
 WorkingDirectory=%h/services/okapi
-ExecStart=%h/services/comfyui/.venv/bin/python -u server.py
+ExecStart=%h/services/okapi/.venv/bin/python -u server.py
 Restart=on-failure
 RestartSec=3
 UMask=0077

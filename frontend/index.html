@@ -15,6 +15,47 @@ body{margin:0;overflow:hidden}
 #okapi-workspace{display:block;width:100vw;height:100dvh;outline:none}
 #okapi-media{position:fixed;display:flex;flex-direction:column;overflow:hidden;background:#131313;z-index:1}
 #okapi-media.workspace-hidden{visibility:hidden;pointer-events:none}
+.precision-controls{display:flex;flex-wrap:wrap;gap:5px;padding:5px;background:#202126;align-items:center;font:11px system-ui;flex:none}
+.precision-controls label{display:flex;align-items:center;gap:3px;min-width:0}
+.precision-controls select{max-width:190px}
+.precision-controls button,.precision-controls select,.precision-controls input{color:#ddd;background:#303238;border:1px solid #50525a;border-radius:3px;font:inherit;padding:3px}
+.precision-controls input[type=number]{width:58px}
+.precision-controls input[type=range]{flex:1;min-width:60px}
+.precision-controls a{color:#adc8ff}
+.precision-toolbar{min-height:31px;flex-wrap:nowrap;background:#1d1f23;border-bottom:1px solid #333740;padding:3px 8px;gap:8px;font-size:11px}
+.precision-toolbar select{max-width:290px;background:transparent;border-color:transparent;padding:3px;font-size:11px}
+.precision-toolbar select:hover{background:#30343b;border-color:#454b56}.precision-view-title{font-weight:500;color:#c8cdd5;margin-right:5px}
+.precision-spacer{flex:1;min-width:8px}.precision-toolbar input[type=number]{width:45px;background:transparent;border-color:#373c45}
+.precision-viewer{min-width:0;min-height:0;container-type:inline-size}
+.precision-rerun-timeline{flex:0 0 180px;min-height:0;overflow:hidden;border-top:1px solid #343434;background:#191919}
+.precision-viewport{position:relative;overflow:hidden;flex:1 1 0;min-width:0;min-height:0;background:#000}
+.precision-image{position:absolute;left:50%;top:50%;width:0;height:0;outline:1px solid #fff;outline-offset:1px}
+.precision-render-frontier{position:absolute;left:0;right:0;border-top:1px solid #efad4e;box-shadow:0 1px 0 #000;pointer-events:none;z-index:3}
+.precision-aspect,.precision-format-label{position:absolute;top:calc(100% + 4px);font:11px ui-monospace,monospace;color:#bcbcbc;pointer-events:none;white-space:nowrap}
+.precision-aspect{left:0}.precision-format-label{right:0}
+.precision-info{display:flex;gap:12px;flex:none;height:23px;min-width:0;align-items:center;background:#000;border-top:1px solid #343434;font:11px ui-monospace,monospace;color:#ccc}
+.precision-info .precision-status{flex:1;min-width:0;background:#000;padding:2px 8px;color:#ccc}
+.precision-info .precision-probe{flex:none;background:#000;padding:2px 8px;color:#ddd}
+.precision-cache-track{position:relative;flex:none;height:16px;background:#111;border-top:1px solid #292929}
+.precision-cache-track canvas{position:absolute;inset:0;width:100%;height:12px}
+.precision-cache-track input{position:absolute;inset:0;opacity:0;width:100%;height:100%;margin:0;cursor:ew-resize}
+.precision-cache-caption{position:absolute;right:4px;top:0;background:#111b;color:#c5ad85;font:9px/12px ui-monospace,monospace;pointer-events:none}
+.seek-cache{position:absolute;left:0;right:0;bottom:0;height:3px;pointer-events:none}.seek-cache i{position:absolute;height:3px;background:#dc933c}
+#okapi-media .precision-image canvas,#okapi-media .precision-image video{position:absolute;inset:0;display:block;width:100%;height:100%;min-width:0;min-height:0;object-fit:fill;flex:none}
+.precision-image canvas{image-rendering:pixelated}
+.precision-image video{pointer-events:none}
+@container(max-width:520px){.precision-toolbar{gap:4px}.precision-toolbar select{max-width:145px}.precision-view-title{display:none}}
+@container(max-width:360px){.precision-toolbar{flex-wrap:wrap}.precision-spacer{display:none}}
+.precision-status,.precision-probe{display:block;flex:none;padding:4px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:10px ui-monospace,monospace}
+.precision-status{color:#b8c9e8}.precision-probe{color:#aaa}
+.media-properties{width:min(530px,calc(100vw - 40px));padding:20px;color:#d8dbe2;background:#23252b;border:1px solid #454952;border-radius:7px;box-shadow:0 15px 60px #0009;font:12px system-ui}
+.media-properties::backdrop{background:#0007}.media-properties h2{margin:0 0 18px;font-size:15px;font-weight:500}
+.media-properties form{display:grid;gap:14px}.media-properties label{display:grid;grid-template-columns:135px 1fr;align-items:center;gap:10px}
+.media-properties input[type=text]{width:100%;min-width:0;padding:6px;background:#181a1f;color:#ddd;border:1px solid #484c55;border-radius:3px;font:11px ui-monospace,monospace}
+.media-properties select{min-width:0;padding:6px;background:#181a1f;color:#ddd;border:1px solid #484c55;border-radius:3px}
+.media-properties-actions{display:flex;justify-content:flex-end;align-items:center;gap:9px;margin-top:16px}
+.media-properties-actions button{padding:6px 14px;border:1px solid #515865;border-radius:4px;background:#303540;color:#ddd;cursor:pointer}
+.media-properties-actions a{color:#a6c5f5}.media-properties-message{font-size:11px;line-height:1.5;color:#a7b4c8}
 #okapi-media video,.media-mount{display:block;width:100%;height:100%;object-fit:contain}
 .media-mount,#okapi-media video{flex:1;min-height:0}
 .media-seek{flex:0 0 31px;display:flex;align-items:stretch;gap:9px;min-width:0;padding:0 8px;background:#191919;border-top:1px solid #343434}
@@ -67,7 +108,7 @@ body{margin:0;overflow:hidden}
 <body>
 <canvas id="okapi-workspace" aria-label="okapi video workspace" tabindex="0"></canvas>
 <div id="okapi-workflow-layer" hidden></div>
-<input id="okapi-file" type="file" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv" aria-label="Source video" hidden>
+<input id="okapi-file" type="file" multiple accept="video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi,.exr,.png,.jpg,.jpeg,.tif,.tiff" aria-label="Source media" hidden>
 <input id="okapi-workflow-file" type="file" accept=".json,application/json" aria-label="Import ComfyUI workflow" hidden>
 <section id="okapi-media" aria-label="Clip preview" hidden></section>
 <button type="button" id="okapi-profile-button" popovertarget="okapi-profile" aria-label="User profile" aria-expanded="false" hidden>

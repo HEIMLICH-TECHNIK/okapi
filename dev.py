@@ -16,7 +16,7 @@ def main():
     server.INPUT = data / 'input' / 'okapi'
     server.OUTPUT_DIR = data / 'output' / 'okapi'
 
-    app = web.Application()
+    app = web.Application(client_max_size=0)
     app.router.add_get('/', index)
     app.router.add_get('/okapi', index)
     app.add_subapp('/okapi', server.make_app())

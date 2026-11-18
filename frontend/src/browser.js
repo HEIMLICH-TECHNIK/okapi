@@ -52,9 +52,9 @@ export function bindBrowser(callback) {
   bindProfile();
   input().addEventListener('change', event => {
     choosingFile = false;
-    const file = event.target.files[0];
+    const files = Array.from(event.target.files);
     input().value = '';
-    if (file) upload(file);
+    if (files.length) upload(files);
   });
   input().addEventListener('cancel', () => { choosingFile = false; });
   const workflowFile = document.getElementById('okapi-workflow-file');
@@ -167,15 +167,26 @@ export function bindBrowser(callback) {
     if (!event.dataTransfer?.files.length) return;
     event.preventDefault();
     if (input().disabled || aboutDialog().open || profileMenuOpen()) return;
-    upload(event.dataTransfer.files[0]);
+    upload(Array.from(event.dataTransfer.files));
   }, true);
+}
+
+let workspaceExtent;
+export function setWorkspaceGeometry(width,height) {
+  workspaceExtent=[width,height];
+}
+function workspaceRect(x,y,width,height) {
+  const canvas=document.getElementById('okapi-workspace').getBoundingClientRect();
+  const sx=workspaceExtent?.[0]>0?canvas.width/workspaceExtent[0]:1;
+  const sy=workspaceExtent?.[1]>0?canvas.height/workspaceExtent[1]:1;
+  return {left:canvas.left+x*sx,top:canvas.top+y*sy,width:width*sx,height:height*sy,sx,sy};
 }
 
 export function positionProfile(x, y, width, height) {
   const button = document.getElementById('okapi-profile-button');
-  const canvas = document.getElementById('okapi-workspace').getBoundingClientRect();
-  const left = canvas.left + x;
-  const top = canvas.top + y;
+  const rectangle=workspaceRect(x,y,width,height);
+  const {left,top}=rectangle;
+  width=rectangle.width;height=rectangle.height;
   button.style.left = `${left}px`;
   button.style.top = `${top}px`;
   button.style.width = `${width}px`;
@@ -270,6 +281,7 @@ export function showAbout() {
 }
 
 function remapViewerWheel(event) {
+  if (viewer?.precision) return;
   const canvas = viewer?.canvas;
   if (!viewer?.ready || !canvas || event.target !== canvas || forwardedWheels.has(event)) return;
   // Browsers encode a trackpad pinch as Ctrl+wheel without a Control key press.
@@ -297,20 +309,22 @@ function remapViewerWheel(event) {
   canvas.dispatchEvent(mapped);
 }
 
-function upload(file) {
+function upload(files) {
+  if (!Array.isArray(files)) files = [files];
+  const file = files[0];
   if (uploading || input().disabled) return;
-  if (file.size > 250 * 1024 * 1024 || !/\.(mp4|mov|m4v|webm|mkv)$/i.test(file.name)) {
-    send('upload_error', 'Choose an MP4, MOV, M4V, WebM or MKV file up to 250 MB.');
+  if (!files.every(item=>/\.(mp4|mov|m4v|webm|mkv|avi|exr|png|jpe?g|tiff?)$/i.test(item.name))) {
+    send('upload_error', 'Choose an EXR, PNG, TIFF, JPEG or video file.');
     return;
   }
   uploading = true;
   send('upload_start', file.name);
   const request = new XMLHttpRequest();
   const form = new FormData();
-  form.append('video', file);
-  request.open('POST', '/okapi/api/upload');
+  for (const item of files) form.append(files.length>1?'frame':'video', item);
+  request.open('POST', files.length>1?'/okapi/api/upload-sequence':'/okapi/api/upload');
   request.responseType = 'json';
-  request.timeout = 300000;
+  request.timeout = 0;
   request.upload.onprogress = event => {
     if (event.lengthComputable) send('upload_progress', event.loaded / event.total);
   };
@@ -541,6 +555,7 @@ function buildSeekBar(video) {
   ruler.className = 'seek-ruler';
   const ticks = document.createElement('div');
   ticks.setAttribute('aria-hidden', 'true');
+  const cache = document.createElement('div');cache.className='seek-cache';
   const cursor = document.createElement('div');
   cursor.className = 'seek-playhead';
   cursor.setAttribute('aria-hidden', 'true');
@@ -549,10 +564,10 @@ function buildSeekBar(video) {
   slider.setAttribute('aria-label', 'Seek clip');
   slider.min = slider.max = slider.value = '0';
   slider.disabled = true;
-  ruler.append(ticks, cursor, slider);
+  ruler.append(cache,ticks, cursor, slider);
   root.append(play, time, ruler);
 
-  const bar = { root, play, slider, time, ruler, ticks, cursor, video };
+  const bar = { root, play, slider, time, ruler, ticks, cursor, video, cacheNode:cache };
   bar.resize = new ResizeObserver(([entry]) => {
     bar.rulerWidth = entry.contentRect.width;
     if (bar.playback && !root.hidden) drawSeekTicks(bar, bar.playback.lastFrame);
@@ -628,6 +643,11 @@ function timeForFrame(frame, timeline, range) {
 }
 
 function readPlayback() {
+  if (viewer?.precision) {
+    return { recording:viewer.job,timeline:'Frame',range:{min:0,max:viewer.state.metadata.frames-1},
+      seconds:viewer.frameTime(viewer.index),frame:viewer.index,
+      lastFrame:viewer.state.metadata.frames-1,playing:viewer.playing,precision:true };
+  }
   const video = seekBar?.video;
   if (video) {
     if (!Number.isFinite(video.duration)) return null;
@@ -674,6 +694,12 @@ function updateSeekCursor(bar, frame, lastFrame) {
   if (bar.time.textContent !== clock) bar.time.textContent = clock;
   if (bar.slider.getAttribute('aria-valuetext') !== clock) bar.slider.setAttribute('aria-valuetext', clock);
   return clock;
+}
+
+function drawSeekCache(bar){
+  if(!bar.cache)return;
+  const {frames,ready}=bar.cache;
+  bar.cacheNode.replaceChildren(...ready.map(frame=>{const node=document.createElement('i');node.style.left=(frame/frames*100)+'%';node.style.width=(100/frames)+'%';node.style.background=bar.cache.ramReady?.includes(frame)?'#dc933c':'#805b32';return node;}));
 }
 
 function drawSeekTicks(bar, lastFrame) {
@@ -727,7 +753,7 @@ function syncSeekBar() {
   }
   syncSound(playback);
   const desired = frameDisplay ? 'Frame' : 'Clip';
-  if (!playback.video && playback.timeline !== desired && !switchingTimeline) {
+  if (!playback.video && !playback.precision && playback.timeline !== desired && !switchingTimeline) {
     const range = viewer.get_time_range(playback.recording, desired);
     if (range) {
       const time = timeForFrame(playback.frame, desired, range);
@@ -770,9 +796,8 @@ export function positionGraph(x, y, width, height) {
   if (!width || !height) {
     graphBounds = null;
   } else {
-    const canvas = document.getElementById('okapi-workspace').getBoundingClientRect();
-    graphBounds = { left: canvas.left + x, top: canvas.top + y,
-      right: canvas.left + x + width, bottom: canvas.top + y + height };
+    const rectangle=workspaceRect(x,y,width,height);
+    graphBounds = {left:rectangle.left,top:rectangle.top,right:rectangle.left+rectangle.width,bottom:rectangle.top+rectangle.height};
   }
   if (before !== graphBounds && (!before || !graphBounds ||
       Object.keys(graphBounds).some(edge => graphBounds[edge] !== before[edge]))) {
@@ -785,9 +810,9 @@ export function positionGraph(x, y, width, height) {
 }
 
 export function positionMedia(x, y, width, height) {
-  const bounds = document.getElementById('okapi-workspace').getBoundingClientRect();
-  const left = bounds.left + x;
-  const top = bounds.top + y;
+  const rectangle=workspaceRect(x,y,width,height);
+  const {left,top}=rectangle;
+  width=rectangle.width;height=rectangle.height;
   const next = `left:${left}px;top:${top}px;width:${width}px;height:${height}px`;
   if (next !== placement) {
     viewerBounds = { left: left - 6, top: top - 58, right: left + width + 6, bottom: top + height + 6 };
@@ -861,6 +886,39 @@ export async function showMedia(job, mode, clip) {
   element.hidden = !job;
   if (!job) return;
   const api = `/okapi/api/jobs/${job}`;
+  try {
+    const response = await fetch(`${api}/precision`);
+    if (!response.ok) throw new Error('Could not inspect the media pipeline.');
+    const state = await response.json();
+    if (attempt !== revision) return;
+    if (state.enabled) {
+      const build = document.querySelector('meta[name="okapi-build"]').content;
+      const { PrecisionViewer } = await import(`/okapi/assets/${build}/precision-viewer.js`);
+      if (attempt !== revision) return;
+      const playback=resume?.playback?.key===key?resume.playback:continued;
+      const next = await PrecisionViewer.open(element, job, mode, state, (kind, payload) => {
+        if(kind==='viewer_cache'){if(seekBar){seekBar.cache=JSON.parse(payload);drawSeekCache(seekBar);}return;}
+        send(kind, payload);
+        if (kind === 'viewer_clock') {
+          const playback = readPlayback();
+          if (playback) syncSound(playback);
+        }
+      },playback);
+      if (attempt !== revision) { next.stop(); return; }
+      viewer = next;
+      const bar=buildSeekBar();seekBar=bar;element.append(bar.root);
+      next.overridePanelState('time',compactViewer?'hidden':null);syncSeekBar();
+      if(playback===resume?.playback&&resume)resume.playback=null;
+      if(playback?.playing&&!element.classList.contains('workspace-hidden'))next.set_playing(job,true).catch(error=>send('preview_error',error.message));
+      return;
+    }
+  } catch (error) {
+    if (attempt === revision) {
+      element.textContent = error.message;
+      send('preview_error', error.message);
+    }
+    return;
+  }
   const videoPath = api + (['matte-video', 'compare', 'output'].includes(mode) ? '/matte' : '/source');
   if (mode === 'source-video' || mode === 'matte-video' || !window.isSecureContext || typeof VideoDecoder !== 'function') {
     fallback(element, videoPath, continued);
@@ -921,6 +979,7 @@ export async function showMedia(job, mode, clip) {
 }
 
 export async function fitViewer() {
+  if (viewer?.precision) { viewer.fit(); return; }
   const element = surface();
   const canvas = element.querySelector('.media-mount canvas');
   if (fitting || !viewer?.ready || !canvas || element.classList.contains('workspace-hidden')) return;
@@ -951,10 +1010,22 @@ export async function fitViewer() {
 }
 
 export function openDownload(job) {
+  if (viewer?.precision && viewer.job === job) { openMediaProperties(job, 'write'); return; }
   const link = document.createElement('a');
   link.href = `/okapi/api/jobs/${job}/download`;
   link.download = '';
   link.click();
+}
+
+export async function openMediaProperties(job, kind) {
+  try {
+    const build = document.querySelector('meta[name="okapi-build"]').content;
+    const properties = await import(`/okapi/assets/${build}/media-settings.js`);
+    await properties.openMediaProperties(job, kind, () => {
+      send('media_color_changed', job);
+      if (viewer?.precision) viewer.refreshColor?.().catch(error=>send('preview_error',error.message));
+    });
+  } catch (error) { send('preview_error', error.message); }
 }
 
 export function workspaceReady() {

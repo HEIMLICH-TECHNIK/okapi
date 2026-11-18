@@ -39,7 +39,7 @@ Use the prebuilt frontend in the repository to open the editor UI locally. Rende
 
 ```sh
 uv venv --python 3.12 .local/venv
-uv pip install --python .local/venv/bin/python -r requirements-dev.txt
+uv pip install --python .local/venv/bin/python -r requirements-media.txt
 .local/venv/bin/python dev.py
 ```
 
@@ -65,3 +65,7 @@ RUSTUP_TOOLCHAIN=1.100.0 bash frontend/build.sh --current
 ```
 
 </details>
+
+## Precision media
+
+EXR/PNG/TIFF/JPEG, numbered image sequences and video can use the float media path with OCIO/ACES color management. The Viewer provides SDR and supported-device HDR display paths; Write exports half/float EXR, ProRes or float RGB video. See [the media contract and current limits](docs/MEDIA_ENGINE.md). New precision jobs currently support Read, Blur, Mirror, Invert and Write; Alpha Gen requires a future explicit SDR model adapter.

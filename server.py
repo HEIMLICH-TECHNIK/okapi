@@ -6,6 +6,7 @@ from itertools import chain, islice
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
@@ -15,6 +16,9 @@ import av
 from aiohttp import ClientError, ClientSession, ClientTimeout, WSMsgType, web
 
 from workflow import CUSTOM_NODES, MODELS, OUTPUT, VIDEO_OPERATIONS, make_prompt
+from media_core import pipeline as precision
+from media_core import routes as precision_routes
+from media_core import projects as media_projects
 
 ROOT = Path(__file__).resolve().parent
 COMFY_DATA = Path.home() / "services/comfyui/data"
@@ -23,7 +27,6 @@ OUTPUT_DIR = COMFY_DATA / "output/okapi"
 JOBS = ROOT / "jobs"
 ENGINE = os.environ.get("OKAPI_ENGINE", "http://127.0.0.1:8188")
 SEGMENT_FRAMES = 121
-MAX_UPLOAD = 250 * 1024 * 1024
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 routes = web.RouteTableDef()
 
@@ -39,7 +42,7 @@ async def handle_errors(request, handler):
     except (ClientError, TimeoutError):
         return web.json_response({"error": "ComfyUI is temporarily unreachable."}, status=503)
     except web.HTTPException as exc:
-        if request.path.startswith("/api/"):
+        if request.path.startswith(("/api/", "/okapi/api/")):
             return web.json_response({"error": exc.text or exc.reason}, status=exc.status)
         raise
 
@@ -176,6 +179,7 @@ def job_file(job_id):
 
 
 def save_job(job_id, value):
+    media_projects.attach(job_id, value, JOBS)
     path = job_file(job_id)
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(value), encoding="utf-8")
@@ -185,40 +189,42 @@ def save_job(job_id, value):
 def get_job(request):
     job_id = request.match_info["job"]
     try:
-        return job_id, json.loads(job_file(job_id).read_text(encoding="utf-8"))
+        job = json.loads(job_file(job_id).read_text(encoding="utf-8"))
+        if "precision" in job and "project_id" not in job:
+            save_job(job_id, job)
+        return job_id, job
     except FileNotFoundError as exc:
         raise web.HTTPNotFound(text="Job not found.") from exc
 
 
 @routes.post("/api/upload")
 async def upload(request):
-    if request.content_length and request.content_length > MAX_UPLOAD + 65536:
-        raise web.HTTPRequestEntityTooLarge(max_size=MAX_UPLOAD, actual_size=request.content_length)
     if request.content_type != "multipart/form-data":
         raise web.HTTPBadRequest(text="Choose a video to upload.")
     part = await (await request.multipart()).next()
     if not part or part.name != "video" or not part.filename:
         raise web.HTTPBadRequest(text="Choose a video first.")
     extension = Path(part.filename).suffix.lower()
-    if extension not in VIDEO_SUFFIXES:
-        raise web.HTTPBadRequest(text="Choose an MP4, MOV, M4V, WebM or MKV file.")
+    if extension not in precision.IMAGES | precision.VIDEOS:
+        raise web.HTTPBadRequest(text="Choose an EXR, PNG, TIFF, JPEG or video file.")
     job_id = uuid4().hex
     filename = job_id + extension
     destination = INPUT / filename
     segment_dir = INPUT / job_id
-    size = 0
     try:
         with destination.open("xb") as output:
             while chunk := await part.read_chunk(256 * 1024):
-                size += len(chunk)
-                if size > MAX_UPLOAD:
-                    raise web.HTTPRequestEntityTooLarge(max_size=MAX_UPLOAD, actual_size=size)
                 output.write(chunk)
         async with request.app["prepare_slots"]:
-            metadata, original, segments = await asyncio.to_thread(prepare_video, destination, segment_dir)
-        job = {"filename": segments[0]["filename"] if segments else filename,
+            source_info = await asyncio.to_thread(precision.inspect, destination)
+        metadata = {key: source_info[key] for key in ("width", "height", "frames", "fps")}
+        original, segments = None, []
+        job = {"filename": filename,
                "source": filename, "name": Path(part.filename).name, "media": metadata,
-               "original": original, "segments": segments}
+               "original": original, "segments": segments, "precision": source_info,
+               "color": {"config":precision.cm.default_id(), "input_space": source_info["input_space"],
+                         "working_space":precision.capabilities()["working_default"],
+                         "alpha_mode": source_info["alpha_mode"]}}
         save_job(job_id, job)
     except BaseException as exc:
         destination.unlink(missing_ok=True)
@@ -283,7 +289,7 @@ async def render_settings(request):
 async def new_version(request):
     _, previous = get_job(request)
     # The source and prepared segments are immutable and can be shared.
-    version = {key: previous[key] for key in ("filename", "source", "name", "media", "original", "segments")
+    version = {key: previous[key] for key in ("filename", "source", "name", "media", "original", "segments", "precision", "color", "project_id", "read")
                if key in previous}
     job_id = uuid4().hex
     save_job(job_id, version)
@@ -297,6 +303,14 @@ async def submit(request):
         if job.get("prompt") or job.get("batch"):
             return web.json_response({"prompt": job.get("prompt")})
         settings = await render_settings(request)
+        if precision_routes.native(job):
+            if job_id in request.app["media_tasks"]:
+                raise web.HTTPConflict(text="A media job is already running.")
+            try:
+                precision_routes.start_render(request.app, job_id, job, settings)
+            except ValueError as exc:
+                raise web.HTTPUnprocessableEntity(text=str(exc)) from exc
+            return web.json_response({"prompt": None})
         if "alpha_gen" in settings["operations"] and await readiness(request):
             raise web.HTTPServiceUnavailable(text="LTX model setup is incomplete. Your upload was saved.")
         job["settings"] = settings
@@ -415,6 +429,18 @@ async def job_status(request):
     batch = job.get("batch")
     response["total_segments"] = len(job.get("segments", [])) or 1
     response["settings"] = job.get("settings")
+    if precision_routes.native(job):
+        result = job.get("precision_render", {})
+        try:
+            current_color = precision_routes.color_of(job, sys.modules[__name__])
+        except ValueError:
+            current_color = None
+        stale = result.get("color") is not None and result["color"] != current_color
+        response.update(state=result.get("state", "uploaded"), error=result.get("error"),
+                        segment=1, precision=job["precision"], color=job.get("color"))
+        if stale:
+            response.update(state="uploaded", settings=None)
+        return web.json_response(response)
     if batch:
         response.update(state=batch["state"], segment=min(batch["index"] + 1, len(job["segments"])))
         if batch.get("error"):
@@ -447,6 +473,8 @@ async def job_status(request):
 async def media(request):
     job_id, job = get_job(request)
     kind = request.match_info["kind"]
+    if precision_routes.native(job) and kind != "source":
+        raise web.HTTPConflict(text="Use the Viewer export controls for EXR, ProRes or float video.")
     if kind != "source":
         batch = job.get("batch")
         if (batch and batch["state"] != "complete") or (not batch and not job.get("prompt")):
@@ -522,10 +550,29 @@ async def review_audio(request):
 
 @routes.get(r"/api/jobs/{job:[0-9a-f]{32}}/events")
 async def job_events(request):
-    job_id, _ = get_job(request)
+    job_id, job = get_job(request)
     origin = request.headers.get("Origin")
     if origin and urlsplit(origin).netloc != request.host:
         raise web.HTTPForbidden(text="Cross-site request blocked.")
+    if precision_routes.native(job):
+        socket = web.WebSocketResponse(heartbeat=25)
+        await socket.prepare(request)
+        while not socket.closed:
+            _, current = get_job(request)
+            state = current.get("precision_render", {})
+            await socket.send_json({"type": "okapi_progress", "data": {
+                "job_id": job_id, "value": state.get("index", 0),
+                "max": current["precision"]["frames"], "state": state.get("state", "uploaded")}})
+            if state.get("state") in ("complete", "failed"):
+                break
+            try:
+                message = await socket.receive(timeout=0.5)
+                if message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
+                    break
+            except TimeoutError:
+                pass
+        await socket.close()
+        return socket
     async with request.app["engine"].ws_connect(ENGINE + "/ws", params={"clientId": job_id}) as upstream:
         socket = web.WebSocketResponse(heartbeat=25)
         await socket.prepare(request)
@@ -612,9 +659,21 @@ async def session_context(app):
     async with ClientSession(timeout=ClientTimeout(total=10)) as app["engine"]:
         for path in JOBS.glob("*.json"):
             job = json.loads(path.read_text(encoding="utf-8"))
+            for key in ("precision_render", "precision_export"):
+                if job.get(key, {}).get("state") in ("queued", "running"):
+                    job[key].update(state="failed", error="Server restarted. Retry from the preserved source.")
+                    save_job(path.stem, job)
             if job.get("batch", {}).get("state") in ("queued", "running", "joining"):
                 start_batch(app, path.stem, job)
         yield
+        media_tasks = list(app["media_tasks"].values())
+        for _, cancel in media_tasks:
+            cancel.set()
+        await asyncio.gather(*(task for task, _ in media_tasks), return_exceptions=True)
+        playback_tasks=list(app["media_playback_tasks"].values())
+        for _, cancel in playback_tasks:cancel.set()
+        await asyncio.gather(*(task for task, _ in playback_tasks),return_exceptions=True)
+        await asyncio.to_thread(app["media_decoders"].close)
         tasks = list(app["batch_tasks"].values())
         for task in tasks:
             task.cancel()
@@ -624,7 +683,7 @@ async def session_context(app):
 def make_app():
     for directory in (INPUT, JOBS):
         directory.mkdir(parents=True, exist_ok=True)
-    app = web.Application(middlewares=[handle_errors], client_max_size=MAX_UPLOAD + 65536)
+    app = web.Application(middlewares=[handle_errors], client_max_size=0)
     app["batch_tasks"] = {}
     app["submit_lock"] = asyncio.Lock()
     app["prepare_slots"] = asyncio.Semaphore(2)
@@ -632,6 +691,7 @@ def make_app():
     app["audio_lock"] = asyncio.Lock()
     app.cleanup_ctx.append(session_context)
     app.add_routes(routes)
+    precision_routes.install(app, sys.modules[__name__])
     app.router.add_static("/assets", ROOT / "static/assets")
     return app
 

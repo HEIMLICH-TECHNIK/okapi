@@ -1,0 +1,9 @@
+# Python 3.12; isolated from the ComfyUI/model environment.
+-r requirements-dev.txt
+numpy==2.5.5
+scipy==1.18.1
+Pillow==13.0.0
+OpenImageIO==3.2.2.0
+opencolorio==2.6.0
+
+rerun-sdk==0.43.2
